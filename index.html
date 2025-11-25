@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EPUB Reader Pro</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div id="app">
+        <header class="header">
+            <div class="header-left">
+                <button id="menuBtn" class="btn btn-icon">☰</button>
+                <h1>EPUB Reader Pro</h1>
+            </div>
+            <div class="header-right">
+                <button id="bookmarkBtn" class="btn bookmark-btn">🔖</button>
+                <button id="themeBtn" class="btn btn-icon">🌙</button>
+                <input type="file" id="fileInput" accept=".epub" style="display: none;">
+                <button id="openBtn" class="btn">📖 Open EPUB</button>
+            </div>
+        </header>
+
+        <div class="main-container">
+            <nav id="sidebar" class="sidebar">
+                <div class="sidebar-header">
+                    <h3>📚 Contents</h3>
+                    <button id="closeSidebar" class="btn btn-icon">×</button>
+                </div>
+                <div class="sidebar-content">
+                    <div id="bookmarks" class="bookmarks-section">
+                        <h4>🔖 Bookmarks</h4>
+                        <div id="bookmarksList" class="bookmarks-list"></div>
+                    </div>
+                    <div id="toc" class="toc"></div>
+                </div>
+            </nav>
+
+            <main class="content">
+                <div id="reader" class="reader">
+                    <div id="bookInfo" class="book-info">
+                        <div class="welcome-card">
+                            <h2>📖 Welcome to EPUB Reader Pro</h2>
+                            <p>Experience books like never before</p>
+                            <button class="btn" onclick="document.getElementById('fileInput').click()">
+                                📁 Choose EPUB File
+                            </button>
+                        </div>
+                    </div>
+                    <div id="bookContent" class="book-content" style="display: none;">
+                        <div id="pageNumber" class="page-number">Page 1</div>
+                    </div>
+                </div>
+
+                <div class="controls">
+                    <div class="controls-left">
+                        <button id="prevBtn" class="btn" disabled>← Previous</button>
+                    </div>
+                    <div class="controls-center">
+                        <div class="page-counter">
+                            <span id="pageInfo">Chapter 0 of 0</span>
+                            <div class="progress-bar">
+                                <div id="progressFill" class="progress-fill"></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="controls-right">
+                        <button id="nextBtn" class="btn" disabled>Next →</button>
+                    </div>
+                </div>
+
+                <div class="settings-panel">
+                    <div class="setting-group">
+                        <label>📝 Font Size:</label>
+                        <input type="range" id="fontSizeSlider" min="12" max="28" value="16">
+                        <span id="fontSizeValue">16px</span>
+                    </div>
+                    <div class="setting-group">
+                        <label>📏 Line Height:</label>
+                        <input type="range" id="lineHeightSlider" min="1.2" max="2.5" step="0.1" value="1.6">
+                        <span id="lineHeightValue">1.6</span>
+                    </div>
+                    <div class="reading-stats">
+                        <div class="stat-item">
+                            <span>📄</span>
+                            <span id="wordCount">0 words</span>
+                        </div>
+                        <div class="stat-item">
+                            <span>⏱️</span>
+                            <span id="readingTime">0 min read</span>
+                        </div>
+                        <div class="stat-item">
+                            <span>📊</span>
+                            <span id="progress">0% complete</span>
+                        </div>
+                    </div>
+                </div>
+            </main>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+    <script src="script.js"></script>
+</body>
+</html>

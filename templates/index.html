@@ -1,0 +1,605 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Python EPUB Reader</title>
+    <style>
+        :root {
+            --bg-primary: #ffffff;
+            --bg-secondary: #ecf0f1;
+            --bg-header: #2c3e50;
+            --text-primary: #2c3e50;
+            --text-secondary: #7f8c8d;
+            --border-color: #ddd;
+            --btn-primary: #3498db;
+            --btn-primary-hover: #2980b9;
+            --btn-bookmark: #e74c3c;
+            --btn-bookmark-hover: #c0392b;
+            --toc-hover: #d5dbdb;
+            --page-number-bg: rgba(0,0,0,0.1);
+        }
+        
+        [data-theme="dark"] {
+            --bg-primary: #1a1a1a;
+            --bg-secondary: #2d2d2d;
+            --bg-header: #1e1e1e;
+            --text-primary: #e0e0e0;
+            --text-secondary: #b0b0b0;
+            --border-color: #444;
+            --btn-primary: #4a90e2;
+            --btn-primary-hover: #357abd;
+            --btn-bookmark: #e74c3c;
+            --btn-bookmark-hover: #c0392b;
+            --toc-hover: #404040;
+            --page-number-bg: rgba(255,255,255,0.1);
+        }
+        
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg-primary); color: var(--text-primary); transition: all 0.3s ease; }
+        .header { background: var(--bg-header); color: white; padding: 1rem; display: flex; justify-content: space-between; align-items: center; }
+        .header-nav { display: flex; gap: 0.5rem; align-items: center; }
+        .btn { background: var(--btn-primary); color: white; border: none; padding: 0.5rem 1rem; border-radius: 4px; cursor: pointer; transition: background 0.2s; }
+        .btn:hover { background: var(--btn-primary-hover); }
+        .btn:disabled { background: #bdc3c7; cursor: not-allowed; }
+        .container { display: flex; height: calc(100vh - 60px); }
+        .sidebar { width: 300px; background: var(--bg-secondary); padding: 1rem; overflow-y: auto; }
+        .content { flex: 1; padding: 2rem; padding-bottom: 6rem; overflow-y: auto; background: var(--bg-primary); }
+        .chapter-content { line-height: var(--line-height, 1.6); font-size: var(--font-size, 16px); font-family: var(--font-family, inherit); max-width: 800px; color: var(--text-primary); }
+        .controls { position: fixed; bottom: 0; left: 0; right: 0; background: var(--bg-primary); padding: 1rem; border-top: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; transform: translateY(0); transition: transform 0.3s ease; }
+        .controls.hidden { transform: translateY(100%); }
+        .controls-toggle { position: fixed; bottom: 10px; right: 10px; background: var(--btn-primary); color: white; border: none; border-radius: 50%; width: 40px; height: 40px; cursor: pointer; z-index: 1001; }
+        .page-info { text-align: center; color: var(--text-secondary); }
+        .toc-item { padding: 0.5rem; cursor: pointer; border-radius: 4px; margin-bottom: 0.25rem; transition: background 0.2s; }
+        .toc-item:hover { background: var(--toc-hover); }
+        .toc-item.active { background: var(--btn-primary); color: white; }
+        .upload-area { border: 2px dashed var(--border-color); padding: 2rem; text-align: center; border-radius: 8px; background: var(--bg-secondary); }
+        .upload-area.dragover { border-color: var(--btn-primary); }
+        #booksList h3 { margin-bottom: 1rem; }
+        #booksList .toc-item { text-align: left; }
+        #fileInput { display: none; }
+
+        .bookmark-btn { background: var(--btn-bookmark); }
+        .bookmark-btn:hover { background: var(--btn-bookmark-hover); }
+        .theme-btn { background: #f39c12; }
+        .theme-btn:hover { background: #e67e22; }
+        h3 { color: var(--text-primary); margin-bottom: 1rem; }
+        .btn { text-decoration: none; }
+        .hamburger-menu { position: absolute; top: 100%; right: 0; background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.5rem 0; min-width: 200px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); display: none; z-index: 1000; }
+        .hamburger-menu a { display: block; padding: 0.75rem 1rem; color: var(--text-primary); text-decoration: none; transition: background 0.2s; }
+        .hamburger-menu a:hover { background: var(--bg-secondary); }
+        .header { position: relative; }
+        .text-controls { position: fixed; top: 80px; right: 10px; background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: 8px; padding: 1rem; display: none; z-index: 1000; min-width: 200px; }
+        .text-controls label { display: block; margin-bottom: 0.5rem; font-size: 0.875rem; }
+        .text-controls input, .text-controls select { width: 100%; padding: 0.25rem; margin-bottom: 0.75rem; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-secondary); color: var(--text-primary); }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>📖 Python EPUB Reader</h1>
+        <div class="header-nav">
+            <button class="btn" onclick="toggleMenu()" id="menuBtn">☰</button>
+            <button class="btn" onclick="toggleTextControls()" id="textBtn" style="display: none;">🅰️</button>
+            <button class="btn bookmark-btn" onclick="showBookmarkDialog()" id="bookmarkBtn" disabled style="display: none;">🔖</button>
+            <button class="btn theme-btn" onclick="toggleTheme()" id="themeBtn">🌙</button>
+        </div>
+        
+        <div id="hamburgerMenu" class="hamburger-menu">
+            <a href="/bookmarks_page">🔖 Bookmarks</a>
+            <a href="/manage">📚 Manage Books</a>
+            <input type="file" id="fileInput" accept=".epub" style="display: none;">
+            <a href="#" onclick="document.getElementById('fileInput').click()">📁 Add Book</a>
+        </div>
+    </div>
+
+    <div class="container">
+        <div class="sidebar">
+            <h3>📚 Table of Contents</h3>
+            <div id="toc"></div>
+            <h3 style="margin-top: 2rem;">🔖 Bookmarks</h3>
+            <div id="bookmarks"></div>
+        </div>
+
+        <div class="content">
+            <div id="welcomeScreen" class="upload-area">
+                <h2>Welcome to Python EPUB Reader</h2>
+                <p>Click "Open EPUB" to load your book</p>
+                <div id="booksList" style="margin-top: 2rem;"></div>
+            </div>
+            <div id="readerContent" style="display: none;">
+                <div id="chapterContent" class="chapter-content"></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="controls">
+        <button class="btn" onclick="previousChapter()" id="prevBtn" disabled>← Previous</button>
+        <div class="page-info">
+            <div>Chapter <span id="currentChapter">0</span> of <span id="totalChapters">0</span></div>
+            <div>Page <span id="currentPage">1</span> of <span id="totalPages">1</span></div>
+        </div>
+        <button class="btn" onclick="nextChapter()" id="nextBtn" disabled>Next →</button>
+    </div>
+    
+    <button class="controls-toggle" onclick="toggleControls()" id="controlsToggle" style="display: none;">↑</button>
+    
+    <div id="textControls" class="text-controls">
+        <label>Font Size:</label>
+        <input type="range" id="fontSizeSlider" min="12" max="24" value="16" oninput="updateFontSize(this.value)">
+        
+        <label>Line Height:</label>
+        <input type="range" id="lineHeightSlider" min="1.2" max="2.5" step="0.1" value="1.6" oninput="updateLineHeight(this.value)">
+        
+        <label>Font Family:</label>
+        <select id="fontFamilySelect" onchange="updateFontFamily(this.value)">
+            <option value="inherit">Default</option>
+            <option value="'Times New Roman', serif">Times New Roman</option>
+            <option value="'Arial', sans-serif">Arial</option>
+            <option value="'Courier New', monospace">Courier New</option>
+            <option value="'Georgia', serif">Georgia</option>
+            <option value="'Helvetica', sans-serif">Helvetica</option>
+            <option value="'Verdana', sans-serif">Verdana</option>
+            <option value="'Trebuchet MS', sans-serif">Trebuchet MS</option>
+            <option value="'Palatino', serif">Palatino</option>
+            <option value="'Garamond', serif">Garamond</option>
+            <option value="'Comic Sans MS', cursive">Comic Sans</option>
+            <option value="'Impact', sans-serif">Impact</option>
+        </select>
+    </div>
+
+    <script>
+        let currentBook = null;
+        let currentChapter = 0;
+        let currentPage = 1;
+        let totalPages = 1;
+
+        document.getElementById('fileInput').addEventListener('change', uploadFile);
+        document.addEventListener('keydown', handleKeyboard);
+        
+        // Load theme preference
+        const isDark = localStorage.getItem('darkMode') === 'true';
+        if (isDark) {
+            document.documentElement.setAttribute('data-theme', 'dark');
+            document.getElementById('themeBtn').textContent = '☀️';
+        }
+        
+        // Load existing books on page load
+        loadExistingBooks();
+        
+        // Check for current book session
+        checkCurrentBook();
+
+        async function uploadFile(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            const formData = new FormData();
+            formData.append('file', file);
+
+            try {
+                const response = await fetch('/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+                const data = await response.json();
+                
+                if (data.error) {
+                    alert(data.error);
+                    return;
+                }
+
+                currentBook = data;
+                displayBook();
+            } catch (error) {
+                alert('Error uploading file: ' + error.message);
+            }
+        }
+
+        async function displayBook() {
+            document.getElementById('welcomeScreen').style.display = 'none';
+            document.getElementById('readerContent').style.display = 'block';
+            document.getElementById('bookmarkBtn').style.display = 'inline-block';
+            document.getElementById('textBtn').style.display = 'inline-block';
+            document.getElementById('controlsToggle').style.display = 'block';
+            
+            await generateTOC();
+            updateNavigation();
+            document.getElementById('bookmarkBtn').disabled = false;
+            loadTextSettings();
+        }
+
+        async function generateTOC() {
+            const response = await fetch(`/toc/${currentBook.id}`);
+            const chapters = await response.json();
+            
+            const toc = document.getElementById('toc');
+            toc.innerHTML = '';
+            
+            chapters.forEach((chapter) => {
+                const item = document.createElement('div');
+                item.className = 'toc-item';
+                item.textContent = chapter.title;
+                item.onclick = () => loadChapter(chapter.index);
+                toc.appendChild(item);
+            });
+        }
+
+        async function loadChapter(chapterNum) {
+            try {
+                const response = await fetch(`/chapter/${currentBook.id}/${chapterNum}`);
+                const data = await response.json();
+                
+                if (data.error) {
+                    alert(data.error);
+                    return;
+                }
+
+                currentChapter = chapterNum;
+                totalPages = data.total_pages;
+                currentPage = 1;
+                document.getElementById('chapterContent').innerHTML = data.content;
+                
+                updatePageNumber();
+                updateNavigation();
+                updateTOCActive();
+                
+                // Save progress
+                await saveProgress();
+                
+            } catch (error) {
+                alert('Error loading chapter: ' + error.message);
+            }
+        }
+
+        function updatePageNumber() {
+            document.getElementById('currentPage').textContent = currentPage;
+            document.getElementById('totalPages').textContent = totalPages;
+        }
+
+        function updateNavigation() {
+            document.getElementById('prevBtn').disabled = currentChapter === 0;
+            document.getElementById('nextBtn').disabled = currentChapter >= (currentBook.chapter_count - 1);
+            document.getElementById('currentChapter').textContent = currentChapter + 1;
+            document.getElementById('totalChapters').textContent = currentBook.chapter_count;
+        }
+
+        function updateTOCActive() {
+            document.querySelectorAll('.toc-item').forEach((item, index) => {
+                item.classList.toggle('active', index === currentChapter);
+            });
+        }
+
+        function previousChapter() {
+            if (currentChapter > 0) {
+                loadChapter(currentChapter - 1);
+            }
+        }
+
+        function nextChapter() {
+            if (currentChapter < currentBook.chapter_count - 1) {
+                loadChapter(currentChapter + 1);
+            }
+        }
+
+        function nextPage() {
+            if (currentPage < totalPages) {
+                currentPage++;
+                updatePageNumber();
+                saveProgress();
+            } else {
+                nextChapter();
+            }
+        }
+
+        function previousPage() {
+            if (currentPage > 1) {
+                currentPage--;
+                updatePageNumber();
+                saveProgress();
+            } else if (currentChapter > 0) {
+                loadChapter(currentChapter - 1);
+            }
+        }
+
+        async function saveProgress() {
+            if (!currentBook) return;
+            await fetch('/progress', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ book_id: currentBook.id, chapter: currentChapter, page: currentPage })
+            });
+        }
+
+        function showBookmarkDialog() {
+            if (!currentBook) return;
+            
+            const dialog = document.createElement('div');
+            dialog.style.cssText = `
+                position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 2000;
+                background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center;
+            `;
+            
+            dialog.innerHTML = `
+                <div style="background: var(--bg-primary); padding: 2rem; border-radius: 8px; max-width: 400px; width: 90%;">
+                    <h3 style="margin-bottom: 1rem;">🔖 Add Bookmark</h3>
+                    <input type="text" id="bookmarkTitle" placeholder="Bookmark title" 
+                           style="width: 100%; padding: 0.5rem; margin-bottom: 1rem; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-secondary); color: var(--text-primary);">
+                    <textarea id="bookmarkDescription" placeholder="Description (optional)" rows="3"
+                              style="width: 100%; padding: 0.5rem; margin-bottom: 1rem; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-secondary); color: var(--text-primary); resize: vertical;"></textarea>
+                    <div style="display: flex; gap: 0.5rem; justify-content: flex-end;">
+                        <button onclick="this.closest('div').parentElement.remove()" class="btn" style="background: var(--text-secondary);">Cancel</button>
+                        <button onclick="saveBookmark()" class="btn">Save</button>
+                    </div>
+                </div>
+            `;
+            
+            document.body.appendChild(dialog);
+            document.getElementById('bookmarkTitle').focus();
+        }
+        
+        async function saveBookmark() {
+            const title = document.getElementById('bookmarkTitle').value.trim();
+            const description = document.getElementById('bookmarkDescription').value.trim();
+            
+            if (!title) {
+                alert('Please enter a bookmark title');
+                return;
+            }
+            
+            const chapterResponse = await fetch(`/chapter/${currentBook.id}/${currentChapter}`);
+            const chapterData = await chapterResponse.json();
+            
+            await fetch('/bookmark', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ 
+                    book_id: currentBook.id,
+                    chapter: currentChapter, 
+                    page: currentPage, 
+                    chapter_title: chapterData.title,
+                    bookmark_title: title,
+                    description: description
+                })
+            });
+            
+            document.querySelector('[style*="position: fixed"]').remove();
+            loadBookmarks();
+            showNotification('🔖 Bookmark added!');
+        }
+
+        async function loadBookmarks() {
+            if (!currentBook) return;
+            try {
+                const response = await fetch(`/bookmarks/${currentBook.id}`);
+                const bookmarks = await response.json();
+                
+                const bookmarksDiv = document.getElementById('bookmarks');
+                bookmarksDiv.innerHTML = '';
+                
+                bookmarks.forEach(bookmark => {
+                    const item = document.createElement('div');
+                    item.className = 'toc-item';
+                    item.innerHTML = `${bookmark[4]}<br><small>${bookmark[3]} • Page ${bookmark[2]}</small>`;
+                    item.onclick = async () => {
+                        await loadChapter(bookmark[1]);
+                        currentPage = bookmark[2];
+                        updatePageNumber();
+                        saveProgress();
+                    };
+                    bookmarksDiv.appendChild(item);
+                });
+            } catch (error) {
+                console.error('Error loading bookmarks:', error);
+            }
+        }
+
+        function handleKeyboard(e) {
+            if (!currentBook) return;
+            
+            switch(e.key) {
+                case 'ArrowLeft':
+                    e.preventDefault();
+                    previousPage();
+                    break;
+                case 'ArrowRight':
+                    e.preventDefault();
+                    nextPage();
+                    break;
+                case 'ArrowUp':
+                    e.preventDefault();
+                    previousChapter();
+                    break;
+                case 'ArrowDown':
+                    e.preventDefault();
+                    nextChapter();
+                    break;
+            }
+        }
+        
+        function toggleTheme() {
+            const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+            const newTheme = isDark ? 'light' : 'dark';
+            
+            document.documentElement.setAttribute('data-theme', newTheme === 'dark' ? 'dark' : null);
+            document.getElementById('themeBtn').textContent = newTheme === 'dark' ? '☀️' : '🌙';
+            localStorage.setItem('darkMode', newTheme === 'dark');
+        }
+        
+        function toggleMenu() {
+            const menu = document.getElementById('hamburgerMenu');
+            menu.style.display = menu.style.display === 'block' ? 'none' : 'block';
+        }
+        
+        // Close menu when clicking outside
+        document.addEventListener('click', (e) => {
+            const menu = document.getElementById('hamburgerMenu');
+            const menuBtn = document.getElementById('menuBtn');
+            if (!menu.contains(e.target) && e.target !== menuBtn) {
+                menu.style.display = 'none';
+            }
+        });
+        
+        function calculatePages() {
+            // Use word count for more accurate pagination
+            const content = document.getElementById('chapterContent');
+            const text = content.textContent || content.innerText || '';
+            const wordCount = text.trim().split(/\s+/).length;
+            const wordsPerPage = 250;
+            totalPages = Math.max(1, Math.ceil(wordCount / wordsPerPage));
+        }
+        
+        function toggleControls() {
+            const controls = document.querySelector('.controls');
+            const toggle = document.getElementById('controlsToggle');
+            
+            if (controls.classList.contains('hidden')) {
+                controls.classList.remove('hidden');
+                toggle.textContent = '↑';
+            } else {
+                controls.classList.add('hidden');
+                toggle.textContent = '↓';
+            }
+        }
+        
+        function toggleTextControls() {
+            const controls = document.getElementById('textControls');
+            controls.style.display = controls.style.display === 'block' ? 'none' : 'block';
+        }
+        
+        function updateFontSize(size) {
+            document.documentElement.style.setProperty('--font-size', size + 'px');
+            localStorage.setItem('fontSize', size);
+        }
+        
+        function updateLineHeight(height) {
+            document.documentElement.style.setProperty('--line-height', height);
+            localStorage.setItem('lineHeight', height);
+        }
+        
+        function updateFontFamily(family) {
+            document.documentElement.style.setProperty('--font-family', family);
+            localStorage.setItem('fontFamily', family);
+        }
+        
+        function loadTextSettings() {
+            const fontSize = localStorage.getItem('fontSize') || '16';
+            const lineHeight = localStorage.getItem('lineHeight') || '1.6';
+            const fontFamily = localStorage.getItem('fontFamily') || 'inherit';
+            
+            document.getElementById('fontSizeSlider').value = fontSize;
+            document.getElementById('lineHeightSlider').value = lineHeight;
+            document.getElementById('fontFamilySelect').value = fontFamily;
+            
+            updateFontSize(fontSize);
+            updateLineHeight(lineHeight);
+            updateFontFamily(fontFamily);
+        }
+        
+        // Auto-hide controls after inactivity
+        let controlsTimeout;
+        document.addEventListener('mousemove', () => {
+            const controls = document.querySelector('.controls');
+            controls.classList.remove('hidden');
+            document.getElementById('controlsToggle').textContent = '↑';
+            
+            clearTimeout(controlsTimeout);
+            controlsTimeout = setTimeout(() => {
+                if (currentBook) {
+                    controls.classList.add('hidden');
+                    document.getElementById('controlsToggle').textContent = '↓';
+                }
+            }, 3000);
+        });
+        
+        // Close text controls when clicking outside
+        document.addEventListener('click', (e) => {
+            const textControls = document.getElementById('textControls');
+            const textBtn = document.getElementById('textBtn');
+            if (!textControls.contains(e.target) && e.target !== textBtn) {
+                textControls.style.display = 'none';
+            }
+        });
+        
+        function showNotification(message) {
+            const notification = document.createElement('div');
+            notification.style.cssText = `
+                position: fixed; top: 20px; right: 20px; z-index: 1000;
+                background: var(--btn-primary); color: white; padding: 1rem 1.5rem;
+                border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+                transform: translateX(100%); transition: transform 0.3s ease;
+            `;
+            notification.textContent = message;
+            document.body.appendChild(notification);
+            
+            setTimeout(() => notification.style.transform = 'translateX(0)', 100);
+            setTimeout(() => {
+                notification.style.transform = 'translateX(100%)';
+                setTimeout(() => document.body.removeChild(notification), 300);
+            }, 2000);
+        }
+        
+        async function loadExistingBooks() {
+            try {
+                const response = await fetch('/books');
+                const books = await response.json();
+                
+                const booksList = document.getElementById('booksList');
+                if (books.length > 0) {
+                    booksList.innerHTML = '<h3>📚 Your Books</h3>';
+                    books.forEach(book => {
+                        const bookItem = document.createElement('div');
+                        bookItem.className = 'toc-item';
+                        bookItem.style.marginBottom = '0.5rem';
+                        bookItem.innerHTML = `<strong>${book.title}</strong><br><small>by ${book.author} • ${book.chapters} chapters</small>`;
+                        bookItem.onclick = () => loadExistingBook(book.id);
+                        booksList.appendChild(bookItem);
+                    });
+                }
+            } catch (error) {
+                console.error('Error loading books:', error);
+            }
+        }
+        
+        async function loadExistingBook(bookId) {
+            try {
+                const response = await fetch(`/load_book/${bookId}`);
+                const book = await response.json();
+                
+                if (book.error) {
+                    alert(book.error);
+                    return;
+                }
+                
+                currentBook = book;
+                await displayBook();
+                
+                // Load last reading position
+                currentChapter = book.last_chapter || 0;
+                currentPage = book.last_page || 1;
+                await loadChapter(currentChapter);
+                updatePageNumber();
+            } catch (error) {
+                alert('Error loading book: ' + error.message);
+            }
+        }
+        
+        async function checkCurrentBook() {
+            try {
+                const response = await fetch('/current_book');
+                const book = await response.json();
+                
+                if (!book.error) {
+                    currentBook = book;
+                    await displayBook();
+                    currentChapter = book.last_chapter || 0;
+                    currentPage = book.last_page || 1;
+                    await loadChapter(currentChapter);
+                    updatePageNumber();
+                }
+            } catch (error) {
+                console.log('No current book session');
+            }
+        }
+    </script>
+</body>
+</html>
