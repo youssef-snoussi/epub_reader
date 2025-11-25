@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Manage Books - Python EPUB Reader</title>
+    <style>
+        :root {
+            --bg-primary: #ffffff;
+            --bg-secondary: #ecf0f1;
+            --bg-header: #2c3e50;
+            --text-primary: #2c3e50;
+            --text-secondary: #7f8c8d;
+            --border-color: #ddd;
+            --btn-primary: #3498db;
+            --btn-primary-hover: #2980b9;
+            --btn-danger: #e74c3c;
+            --btn-danger-hover: #c0392b;
+        }
+        
+        [data-theme="dark"] {
+            --bg-primary: #1a1a1a;
+            --bg-secondary: #2d2d2d;
+            --bg-header: #1e1e1e;
+            --text-primary: #e0e0e0;
+            --text-secondary: #b0b0b0;
+            --border-color: #444;
+            --btn-primary: #4a90e2;
+            --btn-primary-hover: #357abd;
+            --btn-danger: #e74c3c;
+            --btn-danger-hover: #c0392b;
+        }
+        
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg-primary); color: var(--text-primary); transition: all 0.3s ease; }
+        .header { background: var(--bg-header); color: white; padding: 1rem; display: flex; justify-content: space-between; align-items: center; }
+        .btn { background: var(--btn-primary); color: white; border: none; padding: 0.5rem 1rem; border-radius: 4px; cursor: pointer; transition: background 0.2s; text-decoration: none; display: inline-block; }
+        .btn:hover { background: var(--btn-primary-hover); }
+        .btn-danger { background: var(--btn-danger); }
+        .btn-danger:hover { background: var(--btn-danger-hover); }
+        .container { max-width: 1200px; margin: 2rem auto; padding: 0 2rem; }
+        .book-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 1.5rem; margin-top: 2rem; }
+        .book-card { background: var(--bg-secondary); border-radius: 8px; padding: 1.5rem; border: 1px solid var(--border-color); }
+        .book-title { font-size: 1.25rem; font-weight: bold; margin-bottom: 0.5rem; }
+        .book-author { color: var(--text-secondary); margin-bottom: 1rem; }
+        .book-stats { font-size: 0.875rem; color: var(--text-secondary); margin-bottom: 1rem; }
+        .book-actions { display: flex; gap: 0.5rem; }
+        .upload-area { border: 2px dashed var(--border-color); padding: 2rem; text-align: center; border-radius: 8px; background: var(--bg-secondary); }
+        #fileInput { display: none; }
+        .theme-btn { background: #f39c12; }
+        .theme-btn:hover { background: #e67e22; }
+        .header-nav { display: flex; gap: 0.5rem; align-items: center; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div>
+            <h1>📚 Manage Books</h1>
+        </div>
+        <div class="header-nav">
+            <button class="btn theme-btn" onclick="toggleTheme()" id="themeBtn">🌙</button>
+            <a href="/" class="btn">📖</a>
+        </div>
+    </div>
+
+    <div class="container">
+        <div class="upload-area">
+            <h2>Add New Book</h2>
+            <p>Upload EPUB files to your library</p>
+            <input type="file" id="fileInput" accept=".epub" multiple>
+            <button class="btn" onclick="document.getElementById('fileInput').click()">📁 Choose EPUB Files</button>
+        </div>
+
+        <div id="booksGrid" class="book-grid"></div>
+    </div>
+
+    <script>
+        document.getElementById('fileInput').addEventListener('change', uploadFiles);
+        
+        // Load theme preference
+        const isDark = localStorage.getItem('darkMode') === 'true';
+        if (isDark) {
+            document.documentElement.setAttribute('data-theme', 'dark');
+            document.getElementById('themeBtn').textContent = '☀️';
+        }
+        
+        loadBooks();
+
+        async function uploadFiles(event) {
+            const files = Array.from(event.target.files);
+            
+            for (const file of files) {
+                const formData = new FormData();
+                formData.append('file', file);
+
+                try {
+                    const response = await fetch('/upload', {
+                        method: 'POST',
+                        body: formData
+                    });
+                    const data = await response.json();
+                    
+                    if (data.error) {
+                        alert(`Error uploading ${file.name}: ${data.error}`);
+                    }
+                } catch (error) {
+                    alert(`Error uploading ${file.name}: ${error.message}`);
+                }
+            }
+            
+            loadBooks();
+            event.target.value = '';
+        }
+
+        async function loadBooks() {
+            try {
+                const response = await fetch('/books');
+                const books = await response.json();
+                
+                const grid = document.getElementById('booksGrid');
+                grid.innerHTML = '';
+                
+                books.forEach(book => {
+                    const card = document.createElement('div');
+                    card.className = 'book-card';
+                    card.innerHTML = `
+                        <div class="book-title">${book.title}</div>
+                        <div class="book-author">by ${book.author}</div>
+                        <div class="book-stats">${book.chapters} chapters</div>
+                        <div class="book-actions">
+                            <a href="/" class="btn" onclick="loadBook('${book.id}')">📖 Read</a>
+                            <button class="btn btn-danger" onclick="deleteBook('${book.id}', '${book.title}')">🗑️ Delete</button>
+                        </div>
+                    `;
+                    grid.appendChild(card);
+                });
+            } catch (error) {
+                console.error('Error loading books:', error);
+            }
+        }
+
+        async function deleteBook(bookId, title) {
+            if (!confirm(`Delete "${title}"? This will remove all progress and bookmarks.`)) {
+                return;
+            }
+            
+            try {
+                const response = await fetch(`/delete_book/${bookId}`, {
+                    method: 'DELETE'
+                });
+                
+                if (response.ok) {
+                    loadBooks();
+                } else {
+                    alert('Error deleting book');
+                }
+            } catch (error) {
+                alert('Error deleting book: ' + error.message);
+            }
+        }
+
+        function loadBook(bookId) {
+            localStorage.setItem('loadBookId', bookId);
+        }
+
+        function toggleTheme() {
+            const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+            const newTheme = isDark ? 'light' : 'dark';
+            
+            document.documentElement.setAttribute('data-theme', newTheme === 'dark' ? 'dark' : null);
+            document.getElementById('themeBtn').textContent = newTheme === 'dark' ? '☀️' : '🌙';
+            localStorage.setItem('darkMode', newTheme === 'dark');
+        }
+    </script>
+</body>
+</html>

@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bookmarks - Python EPUB Reader</title>
+    <style>
+        :root {
+            --bg-primary: #ffffff;
+            --bg-secondary: #ecf0f1;
+            --bg-header: #2c3e50;
+            --text-primary: #2c3e50;
+            --text-secondary: #7f8c8d;
+            --border-color: #ddd;
+            --btn-primary: #3498db;
+            --btn-primary-hover: #2980b9;
+            --btn-danger: #e74c3c;
+            --btn-danger-hover: #c0392b;
+        }
+        
+        [data-theme="dark"] {
+            --bg-primary: #1a1a1a;
+            --bg-secondary: #2d2d2d;
+            --bg-header: #1e1e1e;
+            --text-primary: #e0e0e0;
+            --text-secondary: #b0b0b0;
+            --border-color: #444;
+            --btn-primary: #4a90e2;
+            --btn-primary-hover: #357abd;
+            --btn-danger: #e74c3c;
+            --btn-danger-hover: #c0392b;
+        }
+        
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg-primary); color: var(--text-primary); transition: all 0.3s ease; }
+        .header { background: var(--bg-header); color: white; padding: 1rem; display: flex; justify-content: space-between; align-items: center; }
+        .btn { background: var(--btn-primary); color: white; border: none; padding: 0.5rem 1rem; border-radius: 4px; cursor: pointer; transition: background 0.2s; text-decoration: none; display: inline-block; }
+        .btn:hover { background: var(--btn-primary-hover); }
+        .btn-danger { background: var(--btn-danger); }
+        .btn-danger:hover { background: var(--btn-danger-hover); }
+        .container { max-width: 1200px; margin: 2rem auto; padding: 0 2rem; }
+        .bookmark-card { background: var(--bg-secondary); border-radius: 8px; padding: 1.5rem; border: 1px solid var(--border-color); margin-bottom: 1rem; }
+        .bookmark-title { font-size: 1.25rem; font-weight: bold; margin-bottom: 0.5rem; }
+        .bookmark-meta { color: var(--text-secondary); font-size: 0.875rem; margin-bottom: 1rem; }
+        .bookmark-description { margin-bottom: 1rem; line-height: 1.5; }
+        .bookmark-actions { display: flex; gap: 0.5rem; }
+        .theme-btn { background: #f39c12; }
+        .theme-btn:hover { background: #e67e22; }
+        .header-nav { display: flex; gap: 0.5rem; align-items: center; }
+        .empty-state { text-align: center; padding: 3rem; color: var(--text-secondary); }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div>
+            <h1>🔖 Bookmarks</h1>
+        </div>
+        <div class="header-nav">
+            <button class="btn theme-btn" onclick="toggleTheme()" id="themeBtn">🌙</button>
+            <a href="/manage" class="btn">📚</a>
+            <a href="/" class="btn">📖</a>
+        </div>
+    </div>
+
+    <div class="container">
+        <div id="bookmarksList"></div>
+        <div id="emptyState" class="empty-state" style="display: none;">
+            <h2>📖 No bookmarks yet</h2>
+            <p>Start reading and add bookmarks to see them here</p>
+        </div>
+    </div>
+
+    <script>
+        // Load theme preference
+        const isDark = localStorage.getItem('darkMode') === 'true';
+        if (isDark) {
+            document.documentElement.setAttribute('data-theme', 'dark');
+            document.getElementById('themeBtn').textContent = '☀️';
+        }
+        
+        loadBookmarks();
+
+        async function loadBookmarks() {
+            try {
+                const response = await fetch('/all_bookmarks');
+                const bookmarks = await response.json();
+                
+                const list = document.getElementById('bookmarksList');
+                const emptyState = document.getElementById('emptyState');
+                
+                if (bookmarks.length === 0) {
+                    list.innerHTML = '';
+                    emptyState.style.display = 'block';
+                    return;
+                }
+                
+                emptyState.style.display = 'none';
+                list.innerHTML = '';
+                
+                bookmarks.forEach(bookmark => {
+                    const card = document.createElement('div');
+                    card.className = 'bookmark-card';
+                    card.innerHTML = `
+                        <div class="bookmark-title">${bookmark.bookmark_title}</div>
+                        <div class="bookmark-meta">
+                            📚 ${bookmark.book_title} by ${bookmark.author}<br>
+                            📄 ${bookmark.chapter_title} • Page ${bookmark.page}<br>
+                            🕒 ${new Date(bookmark.created_at).toLocaleDateString()}
+                        </div>
+                        <div class="bookmark-description">${bookmark.description || 'No description'}</div>
+                        <div class="bookmark-actions">
+                            <button class="btn" onclick="goToBookmark('${bookmark.book_id}', ${bookmark.chapter}, ${bookmark.page})">📖 Go to</button>
+                            <button class="btn btn-danger" onclick="deleteBookmark(${bookmark.id})">🗑️ Delete</button>
+                        </div>
+                    `;
+                    list.appendChild(card);
+                });
+            } catch (error) {
+                console.error('Error loading bookmarks:', error);
+            }
+        }
+
+        async function deleteBookmark(bookmarkId) {
+            if (!confirm('Delete this bookmark?')) return;
+            
+            try {
+                const response = await fetch(`/delete_bookmark/${bookmarkId}`, {
+                    method: 'DELETE'
+                });
+                
+                if (response.ok) {
+                    loadBookmarks();
+                } else {
+                    alert('Error deleting bookmark');
+                }
+            } catch (error) {
+                alert('Error deleting bookmark: ' + error.message);
+            }
+        }
+
+        function goToBookmark(bookId, chapter, page) {
+            localStorage.setItem('loadBookId', bookId);
+            localStorage.setItem('loadChapter', chapter);
+            localStorage.setItem('loadPage', page);
+            window.location.href = '/';
+        }
+
+        function toggleTheme() {
+            const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+            const newTheme = isDark ? 'light' : 'dark';
+            
+            document.documentElement.setAttribute('data-theme', newTheme === 'dark' ? 'dark' : null);
+            document.getElementById('themeBtn').textContent = newTheme === 'dark' ? '☀️' : '🌙';
+            localStorage.setItem('darkMode', newTheme === 'dark');
+        }
+    </script>
+</body>
+</html>

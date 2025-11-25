@@ -1,0 +1,27 @@
+# Virtual environment
+epub/
+
+# Database
+*.db
+
+# Uploads
+uploads/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Old files
+index.html
+script.js
+styles.css
+run.py
