@@ -43,7 +43,10 @@
         .btn:hover { background: var(--btn-primary-hover); }
         .btn:disabled { background: #bdc3c7; cursor: not-allowed; }
         .container { display: flex; height: calc(100vh - 60px); }
-        .sidebar { width: 300px; background: var(--bg-secondary); padding: 1rem; overflow-y: auto; }
+        .sidebar { width: 300px; background: var(--bg-secondary); padding: 1rem; overflow-y: auto; transition: width 0.3s ease; }
+        .sidebar.collapsed { width: 40px; }
+        .sidebar.collapsed h3, .sidebar.collapsed #toc, .sidebar.collapsed #bookmarks { display: none; }
+        .sidebar-toggle { position: absolute; top: 10px; left: 10px; background: var(--btn-primary); color: white; border: none; border-radius: 4px; width: 30px; height: 30px; cursor: pointer; z-index: 100; }
         .content { flex: 1; padding: 2rem; padding-bottom: 6rem; overflow-y: auto; background: var(--bg-primary); }
         .chapter-content { line-height: var(--line-height, 1.6); font-size: var(--font-size, 16px); font-family: var(--font-family, inherit); max-width: 800px; color: var(--text-primary); }
         .controls { position: fixed; bottom: 0; left: 0; right: 0; background: var(--bg-primary); padding: 1rem; border-top: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; transform: translateY(0); transition: transform 0.3s ease; }
@@ -93,10 +96,12 @@
     </div>
 
     <div class="container">
-        <div class="sidebar">
-            <h3>📚 Table of Contents</h3>
+        <div class="sidebar" id="sidebar">
+            <button class="sidebar-toggle" onclick="toggleSidebar()" id="sidebarToggle">☰</button>
+            <input type="text" id="searchInput" placeholder="🔍 Search..." style="width: 100%; padding: 0.5rem; margin-bottom: 1rem; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-primary); color: var(--text-primary);" oninput="searchContent()">
+            <h3 onclick="toggleSection('toc')" style="cursor: pointer;">📚 Table of Contents <span id="tocToggle">▼</span></h3>
             <div id="toc"></div>
-            <h3 style="margin-top: 2rem;">🔖 Bookmarks</h3>
+            <h3 onclick="toggleSection('bookmarks')" style="cursor: pointer; margin-top: 2rem;">🔖 Bookmarks <span id="bookmarksToggle">▼</span></h3>
             <div id="bookmarks"></div>
         </div>
 
@@ -152,6 +157,9 @@
         let currentChapter = 0;
         let currentPage = 1;
         let totalPages = 1;
+        let totalBookPages = 1;
+        let chapterStartPage = 1;
+        let chapterMapping = {};
 
         document.getElementById('fileInput').addEventListener('change', uploadFile);
         document.addEventListener('keydown', handleKeyboard);
@@ -168,6 +176,44 @@
         
         // Check for current book session
         checkCurrentBook();
+        
+        // Global click handler for links
+        document.addEventListener('click', (e) => {
+            if (e.target.tagName === 'A' && e.target.hasAttribute('data-href')) {
+                e.preventDefault();
+                const href = e.target.getAttribute('data-href');
+                console.log('Link clicked:', href, 'Mapping:', chapterMapping);
+                if (href) {
+                    if (href.startsWith('#')) {
+                        // Same chapter anchor
+                        const target = document.getElementById('chapterContent').querySelector(href);
+                        if (target) target.scrollIntoView({ behavior: 'smooth' });
+                    } else {
+                        // Internal chapter link
+                        const baseHref = href.split('#')[0];
+                        const anchor = href.includes('#') ? href.split('#')[1] : null;
+                        const filename = baseHref.split('/').pop();
+                        
+                        // Try to find chapter number
+                        let chapterNum = chapterMapping[baseHref] || chapterMapping[filename];
+                        console.log('Looking for:', baseHref, 'or', filename, 'Found:', chapterNum);
+                        
+                        if (chapterNum !== undefined) {
+                            loadChapter(chapterNum).then(() => {
+                                if (anchor) {
+                                    setTimeout(() => {
+                                        const target = document.getElementById('chapterContent').querySelector(`#${anchor}`);
+                                        if (target) target.scrollIntoView({ behavior: 'smooth' });
+                                    }, 100);
+                                }
+                            });
+                        } else {
+                            console.log('Chapter not found for:', href);
+                        }
+                    }
+                }
+            }
+        });
 
         async function uploadFile(event) {
             const file = event.target.files[0];
@@ -203,9 +249,23 @@
             document.getElementById('controlsToggle').style.display = 'block';
             
             await generateTOC();
+            await loadChapterMapping();
+            await loadBookStats();
             updateNavigation();
             document.getElementById('bookmarkBtn').disabled = false;
             loadTextSettings();
+        }
+        
+        async function loadChapterMapping() {
+            const response = await fetch(`/chapter_mapping/${currentBook.id}`);
+            chapterMapping = await response.json();
+            console.log('Chapter mapping loaded:', chapterMapping);
+        }
+        
+        async function loadBookStats() {
+            const response = await fetch(`/book_stats/${currentBook.id}`);
+            const stats = await response.json();
+            totalBookPages = stats.total_pages;
         }
 
         async function generateTOC() {
@@ -237,7 +297,25 @@
                 currentChapter = chapterNum;
                 totalPages = data.total_pages;
                 currentPage = 1;
-                document.getElementById('chapterContent').innerHTML = data.content;
+                
+                // Calculate chapter start page
+                chapterStartPage = await getChapterStartPage(chapterNum);
+                
+                // Add content and remove existing event listeners
+                const content = document.getElementById('chapterContent');
+                content.innerHTML = data.content;
+                
+                // Remove href attributes from internal links to prevent browser navigation
+                content.querySelectorAll('a').forEach(link => {
+                    const href = link.getAttribute('href');
+                    if (href && !href.startsWith('http') && !href.startsWith('mailto:')) {
+                        link.setAttribute('data-href', href);
+                        link.removeAttribute('href');
+                        link.style.cursor = 'pointer';
+                        link.style.color = 'var(--btn-primary)';
+                        link.style.textDecoration = 'underline';
+                    }
+                });
                 
                 updatePageNumber();
                 updateNavigation();
@@ -252,8 +330,21 @@
         }
 
         function updatePageNumber() {
-            document.getElementById('currentPage').textContent = currentPage;
-            document.getElementById('totalPages').textContent = totalPages;
+            const bookPage = chapterStartPage + currentPage - 1;
+            document.getElementById('currentPage').textContent = bookPage;
+            document.getElementById('totalPages').textContent = totalBookPages;
+        }
+        
+        async function getChapterStartPage(chapterNum) {
+            let startPage = 1;
+            for (let i = 0; i < chapterNum; i++) {
+                const response = await fetch(`/chapter/${currentBook.id}/${i}`);
+                const data = await response.json();
+                if (data.total_pages) {
+                    startPage += data.total_pages;
+                }
+            }
+            return startPage;
         }
 
         function updateNavigation() {
@@ -536,6 +627,141 @@
                 notification.style.transform = 'translateX(100%)';
                 setTimeout(() => document.body.removeChild(notification), 300);
             }, 2000);
+        }
+        
+        function toggleSection(sectionId) {
+            const section = document.getElementById(sectionId);
+            const toggle = document.getElementById(sectionId + 'Toggle');
+            
+            if (section.style.display === 'none') {
+                section.style.display = 'block';
+                toggle.textContent = '▼';
+            } else {
+                section.style.display = 'none';
+                toggle.textContent = '▶';
+            }
+        }
+        
+        function toggleSidebar() {
+            const sidebar = document.getElementById('sidebar');
+            const toggle = document.getElementById('sidebarToggle');
+            
+            if (sidebar.classList.contains('collapsed')) {
+                sidebar.classList.remove('collapsed');
+                toggle.textContent = '☰';
+            } else {
+                sidebar.classList.add('collapsed');
+                toggle.textContent = '→';
+            }
+        }
+        
+        let currentSearchQuery = '';
+        let searchTimeout;
+        
+        async function searchContent() {
+            const query = document.getElementById('searchInput').value.trim();
+            currentSearchQuery = query;
+            
+            clearTimeout(searchTimeout);
+            
+            if (!query || !currentBook || query.length < 2) {
+                clearSearchResults();
+                return;
+            }
+            
+            searchTimeout = setTimeout(async () => {
+                try {
+                    const response = await fetch(`/search/${currentBook.id}/${encodeURIComponent(query)}`);
+                    const results = await response.json();
+                    displaySearchResults(results);
+                } catch (error) {
+                    console.error('Search error:', error);
+                }
+            }, 300);
+        }
+        
+        function displaySearchResults(results) {
+            const toc = document.getElementById('toc');
+            toc.innerHTML = '';
+            
+            if (results.length === 0) {
+                toc.innerHTML = '<div style="padding: 0.5rem; color: var(--text-secondary);">No results found</div>';
+                return;
+            }
+            
+            results.forEach(result => {
+                const item = document.createElement('div');
+                item.className = 'toc-item';
+                item.innerHTML = `<strong>${result.title}</strong><br><small>${result.context}</small>`;
+                item.onclick = () => loadChapterWithSearch(result.chapter, currentSearchQuery);
+                toc.appendChild(item);
+            });
+        }
+        
+        async function loadChapterWithSearch(chapterNum, searchTerm) {
+            await loadChapter(chapterNum);
+            if (searchTerm) {
+                setTimeout(() => highlightAndScrollToTerm(searchTerm), 100);
+            }
+        }
+        
+        function highlightAndScrollToTerm(searchTerm) {
+            const content = document.getElementById('chapterContent');
+            const walker = document.createTreeWalker(
+                content,
+                NodeFilter.SHOW_TEXT,
+                null,
+                false
+            );
+            
+            const textNodes = [];
+            let node;
+            while (node = walker.nextNode()) {
+                textNodes.push(node);
+            }
+            
+            let firstMatch = null;
+            textNodes.forEach(textNode => {
+                const text = textNode.textContent;
+                const lowerText = text.toLowerCase();
+                const lowerTerm = searchTerm.toLowerCase();
+                const index = lowerText.indexOf(lowerTerm);
+                
+                if (index !== -1) {
+                    const span = document.createElement('span');
+                    span.innerHTML = text.substring(0, index) + 
+                        '<mark style="background: yellow; color: black; padding: 2px;">' + 
+                        text.substring(index, index + searchTerm.length) + 
+                        '</mark>' + 
+                        text.substring(index + searchTerm.length);
+                    
+                    if (!firstMatch) {
+                        firstMatch = span.querySelector('mark');
+                    }
+                    
+                    textNode.parentNode.replaceChild(span, textNode);
+                }
+            });
+            
+            if (firstMatch) {
+                firstMatch.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
+        }
+        
+        function clearSearchResults() {
+            currentSearchQuery = '';
+            clearHighlights();
+            generateTOC();
+        }
+        
+        function clearHighlights() {
+            const content = document.getElementById('chapterContent');
+            const marks = content.querySelectorAll('mark');
+            marks.forEach(mark => {
+                const parent = mark.parentNode;
+                parent.replaceChild(document.createTextNode(mark.textContent), mark);
+                parent.normalize();
+            });
         }
         
         async function loadExistingBooks() {

@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, render_template, request, jsonify, abort
 import sqlite3
 import ebooklib
 from ebooklib import epub
@@ -6,12 +6,15 @@ from bs4 import BeautifulSoup
 import os
 import uuid
 import warnings
+import magic
+import re
 
 warnings.filterwarnings('ignore', category=UserWarning, module='ebooklib')
 warnings.filterwarnings('ignore', category=FutureWarning, module='ebooklib')
 
 app = Flask(__name__)
 app.secret_key = 'epub_reader_secret_key'
+app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB limit
 
 class EPUBReader:
     def __init__(self):
@@ -23,8 +26,17 @@ class EPUBReader:
         c.execute('''CREATE TABLE IF NOT EXISTS books
                      (id TEXT PRIMARY KEY, title TEXT, author TEXT, chapters INTEGER)''')
         c.execute('''CREATE TABLE IF NOT EXISTS chapters
-                     (book_id TEXT, chapter_num INTEGER, title TEXT, content TEXT, word_count INTEGER,
+                     (book_id TEXT, chapter_num INTEGER, title TEXT, content TEXT, word_count INTEGER, cum_word_count INTEGER,
                       PRIMARY KEY (book_id, chapter_num))''')
+        c.execute('''CREATE TABLE IF NOT EXISTS chapter_mapping
+                     (book_id TEXT, href TEXT, chapter_num INTEGER,
+                      PRIMARY KEY (book_id, href))''')
+        conn.commit()
+        # Add cum_word_count if not exists
+        try:
+            c.execute("ALTER TABLE chapters ADD COLUMN cum_word_count INTEGER DEFAULT 0")
+        except:
+            pass
         c.execute('''CREATE TABLE IF NOT EXISTS images
                      (book_id TEXT, filename TEXT, data BLOB,
                       PRIMARY KEY (book_id, filename))''')
@@ -53,57 +65,82 @@ class EPUBReader:
         # Extract and store images
         conn = sqlite3.connect('reader.db')
         c = conn.cursor()
-        c.execute("DELETE FROM images WHERE book_id = ?", (book_id,))
         
-        for item in book.get_items():
-            if item.get_type() == ebooklib.ITEM_IMAGE:
-                # Store with original filename
-                original_name = item.get_name().split('/')[-1]
-                c.execute("INSERT INTO images VALUES (?, ?, ?)",
-                         (book_id, original_name, item.get_content()))
-                # Also store with full path as filename for nested images
-                full_path_name = item.get_name().replace('/', '_').replace('\\', '_')
-                if full_path_name != original_name:
-                    c.execute("INSERT OR IGNORE INTO images VALUES (?, ?, ?)",
-                             (book_id, full_path_name, item.get_content()))
-        
-        # Extract chapters and fix image paths
-        chapters = []
-        for item in book.get_items():
-            if item.get_type() == ebooklib.ITEM_DOCUMENT:
-                soup = BeautifulSoup(item.get_content(), 'html.parser')
-                
-                # Fix image src paths
-                for img in soup.find_all('img'):
-                    src = img.get('src')
-                    if src:
-                        # Try multiple filename variations
-                        original_name = src.split('/')[-1]
-                        full_path_name = src.replace('/', '_').replace('\\', '_')
-                        img['src'] = f'/image/{book_id}/{original_name}'
-                        img['onerror'] = f"this.src='/image/{book_id}/{full_path_name}'"
-                        img['style'] = 'max-width: 100%; height: auto;'
-                
-                text = soup.get_text()
-                if text.strip():
-                    chapters.append({
-                        'title': self.extract_title(soup),
-                        'content': str(soup),
-                        'word_count': len(text.split())
-                    })
-        
-        # Save to database
-        c.execute("INSERT OR REPLACE INTO books VALUES (?, ?, ?, ?)", 
-                 (book_id, title, author, len(chapters)))
-        
-        # Store chapters in database
-        c.execute("DELETE FROM chapters WHERE book_id = ?", (book_id,))
-        for i, chapter in enumerate(chapters):
-            c.execute("INSERT INTO chapters VALUES (?, ?, ?, ?, ?)",
-                     (book_id, i, chapter['title'], chapter['content'], chapter['word_count']))
-        
-        conn.commit()
-        conn.close()
+        try:
+            # Start transaction
+            conn.execute("BEGIN")
+            
+            # Extract and store images
+            c.execute("DELETE FROM images WHERE book_id = ?", (book_id,))
+            
+            for item in book.get_items():
+                if item.get_type() == ebooklib.ITEM_IMAGE:
+                    # Store with original filename, sanitize
+                    original_name = re.sub(r'[^a-zA-Z0-9_.]', '_', item.get_name().split('/')[-1])
+                    c.execute("INSERT INTO images VALUES (?, ?, ?)",
+                             (book_id, original_name, item.get_content()))
+                    # Also store with full path as filename for nested images
+                    full_path_name = re.sub(r'[^a-zA-Z0-9_.]', '_', item.get_name().replace('/', '_').replace('\\', '_'))
+                    if full_path_name != original_name:
+                        c.execute("INSERT OR IGNORE INTO images VALUES (?, ?, ?)",
+                                 (book_id, full_path_name, item.get_content()))
+            
+            # Extract chapters
+            chapters = []
+            spine_items = []
+            
+            for i, item in enumerate(book.spine):
+                spine_item = book.get_item_with_id(item[0])
+                if spine_item and spine_item.get_type() == ebooklib.ITEM_DOCUMENT:
+                    spine_items.append(spine_item)
+                    soup = BeautifulSoup(spine_item.get_content(), 'html.parser')
+                    
+                    # Fix image paths
+                    for img in soup.find_all('img'):
+                        src = img.get('src')
+                        if src:
+                            original_name = re.sub(r'[^a-zA-Z0-9_.]', '_', src.split('/')[-1])
+                            full_path_name = re.sub(r'[^a-zA-Z0-9_.]', '_', src.replace('/', '_').replace('\\', '_'))
+                            img['src'] = f'/image/{book_id}/{original_name}'
+                            img['onerror'] = f"this.src='/image/{book_id}/{full_path_name}'"
+                            img['style'] = 'max-width: 100%; height: auto;'
+                    
+                    text = soup.get_text()
+                    if text.strip():
+                        chapters.append({
+                            'title': self.extract_title(soup),
+                            'content': str(soup),
+                            'word_count': len(re.findall(r'\b\w+\b', text)),
+                            'href': spine_item.get_name()
+                        })
+            
+            # Save to database
+            c.execute("INSERT OR REPLACE INTO books VALUES (?, ?, ?, ?)", 
+                     (book_id, title, author, len(chapters)))
+            
+            # Store chapters and mapping in database
+            c.execute("DELETE FROM chapters WHERE book_id = ?", (book_id,))
+            c.execute("DELETE FROM chapter_mapping WHERE book_id = ?", (book_id,))
+            cum = 0
+            for i, chapter in enumerate(chapters):
+                cum += chapter['word_count']
+                c.execute("INSERT INTO chapters VALUES (?, ?, ?, ?, ?, ?)",
+                         (book_id, i, chapter['title'], chapter['content'], chapter['word_count'], cum))
+                # Store chapter mapping
+                c.execute("INSERT INTO chapter_mapping VALUES (?, ?, ?)",
+                         (book_id, chapter['href'], i))
+                # Also store filename mapping
+                filename = chapter['href'].split('/')[-1]
+                if filename != chapter['href']:
+                    c.execute("INSERT OR IGNORE INTO chapter_mapping VALUES (?, ?, ?)",
+                             (book_id, filename, i))
+            
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            raise e
+        finally:
+            conn.close()
         
         return {
             'id': book_id,
@@ -133,20 +170,42 @@ class EPUBReader:
         return result if result else (0, 1)
     
     def save_progress(self, book_id, chapter, page):
+        if not isinstance(chapter, int) or chapter < 0:
+            raise ValueError("Invalid chapter number")
+        if not isinstance(page, int) or page < 1:
+            raise ValueError("Invalid page number")
+        
         conn = sqlite3.connect('reader.db')
         c = conn.cursor()
-        c.execute("INSERT OR REPLACE INTO reading_progress VALUES (?, ?, ?)", 
-                 (book_id, chapter, page))
-        conn.commit()
-        conn.close()
+        try:
+            c.execute("INSERT OR REPLACE INTO reading_progress VALUES (?, ?, ?)", 
+                     (book_id, chapter, page))
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            raise e
+        finally:
+            conn.close()
     
     def add_bookmark(self, book_id, chapter, page, chapter_title, bookmark_title, description):
+        if not isinstance(chapter, int) or chapter < 0:
+            raise ValueError("Invalid chapter")
+        if not isinstance(page, int) or page < 1:
+            raise ValueError("Invalid page")
+        if not bookmark_title or not chapter_title:
+            raise ValueError("Invalid titles")
+        
         conn = sqlite3.connect('reader.db')
         c = conn.cursor()
-        c.execute("INSERT INTO bookmarks (book_id, chapter, page, chapter_title, bookmark_title, description) VALUES (?, ?, ?, ?, ?, ?)",
-                 (book_id, chapter, page, chapter_title, bookmark_title, description))
-        conn.commit()
-        conn.close()
+        try:
+            c.execute("INSERT INTO bookmarks (book_id, chapter, page, chapter_title, bookmark_title, description) VALUES (?, ?, ?, ?, ?, ?)",
+                     (book_id, chapter, page, chapter_title, bookmark_title, description))
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            raise e
+        finally:
+            conn.close()
     
     def get_bookmarks(self, book_id):
         conn = sqlite3.connect('reader.db')
@@ -176,7 +235,6 @@ class EPUBReader:
         conn.close()
 
 reader = EPUBReader()
-current_book_id = None
 
 @app.route('/current_book')
 def get_current_book():
@@ -227,7 +285,6 @@ def get_books():
 
 @app.route('/load_book/<book_id>')
 def load_book(book_id):
-    global current_book_id
     conn = sqlite3.connect('reader.db')
     c = conn.cursor()
     c.execute("SELECT title, author, chapters FROM books WHERE id = ?", (book_id,))
@@ -235,7 +292,6 @@ def load_book(book_id):
     conn.close()
     
     if result:
-        current_book_id = book_id
         progress = reader.get_reading_progress(book_id)
         return jsonify({
             'id': book_id,
@@ -245,32 +301,48 @@ def load_book(book_id):
             'last_chapter': progress[0],
             'last_page': progress[1]
         })
-    return jsonify({'error': 'Book not found'})
+    return jsonify({'error': 'Book not found'}), 404
 
 @app.route('/upload', methods=['POST'])
 def upload_epub():
-    global current_book_id
     if 'file' not in request.files:
-        return jsonify({'error': 'No file uploaded'})
+        return jsonify({'error': 'No file uploaded'}), 400
     
     file = request.files['file']
     if file.filename == '':
-        return jsonify({'error': 'No file selected'})
+        return jsonify({'error': 'No file selected'}), 400
     
     if file and file.filename.endswith('.epub'):
-        file_path = f"uploads/{file.filename}"
+        # Check MIME type
+        file.stream.seek(0)
+        mime_type = magic.from_buffer(file.stream.read(2048), mime=True)
+        file.stream.seek(0)
+        if mime_type not in ['application/epub+zip', 'application/zip']:
+            return jsonify({'error': 'Invalid file type. Must be EPUB.'}), 400
+        
+        # Sanitize filename
+        if not re.match(r'^[a-zA-Z0-9_.-]+\.epub$', file.filename):
+            return jsonify({'error': 'Invalid filename.'}), 400
+        
+        file_path = f"uploads/{os.path.basename(file.filename)}"
         os.makedirs('uploads', exist_ok=True)
         file.save(file_path)
         
         try:
             book_data = reader.parse_epub(file_path)
-            current_book_id = book_data['id']
             os.remove(file_path)
             return jsonify(book_data)
         except Exception as e:
-            return jsonify({'error': str(e)})
+            # Cleanup on failure
+            if os.path.exists(file_path):
+                os.remove(file_path)
+            return jsonify({'error': f'Failed to parse EPUB: {str(e)}'}), 500
+        finally:
+            # Ensure cleanup
+            if os.path.exists(file_path):
+                os.remove(file_path)
     
-    return jsonify({'error': 'Invalid file format'})
+    return jsonify({'error': 'Invalid file format'}), 400
 
 @app.route('/chapter/<book_id>/<int:chapter_num>')
 def get_chapter(book_id, chapter_num):
@@ -297,22 +369,50 @@ def get_chapter(book_id, chapter_num):
 
 @app.route('/progress', methods=['POST'])
 def save_progress():
-    data = request.json
-    book_id = data.get('book_id')
-    if book_id:
-        reader.save_progress(book_id, data['chapter'], data['page'])
+    try:
+        data = request.get_json()
+        if not data or 'book_id' not in data or 'chapter' not in data or 'page' not in data:
+            return jsonify({'error': 'Invalid data'}), 400
+        
+        book_id = data['book_id']
+        chapter = data['chapter']
+        page = data['page']
+        
+        if not isinstance(chapter, int) or chapter < 0:
+            return jsonify({'error': 'Invalid chapter'}), 400
+        if not isinstance(page, int) or page < 1:
+            return jsonify({'error': 'Invalid page'}), 400
+        
+        reader.save_progress(book_id, chapter, page)
         return jsonify({'success': True})
-    return jsonify({'error': 'No book loaded'})
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        return jsonify({'error': 'Internal server error'}), 500
 
 @app.route('/bookmark', methods=['POST'])
 def add_bookmark():
-    data = request.json
-    book_id = data.get('book_id')
-    if book_id:
-        reader.add_bookmark(book_id, data['chapter'], data['page'], 
-                          data['chapter_title'], data['bookmark_title'], data['description'])
+    try:
+        data = request.get_json()
+        if not data or 'book_id' not in data or 'chapter' not in data or 'page' not in data or 'chapter_title' not in data or 'bookmark_title' not in data:
+            return jsonify({'error': 'Invalid data'}), 400
+        
+        book_id = data['book_id']
+        chapter = data['chapter']
+        page = data['page']
+        chapter_title = data['chapter_title']
+        bookmark_title = data['bookmark_title']
+        description = data.get('description', '')
+        
+        if not isinstance(bookmark_title, str) or len(bookmark_title.strip()) == 0:
+            return jsonify({'error': 'Invalid bookmark title'}), 400
+        
+        reader.add_bookmark(book_id, chapter, page, chapter_title, bookmark_title, description)
         return jsonify({'success': True})
-    return jsonify({'error': 'No book loaded'})
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        return jsonify({'error': 'Internal server error'}), 500
 
 @app.route('/bookmarks/<book_id>')
 def get_bookmarks(book_id):
@@ -330,6 +430,29 @@ def get_toc(book_id):
     
     return jsonify(chapters)
 
+@app.route('/chapter_mapping/<book_id>')
+def get_chapter_mapping(book_id):
+    conn = sqlite3.connect('reader.db')
+    c = conn.cursor()
+    c.execute("SELECT href, chapter_num FROM chapter_mapping WHERE book_id = ?", (book_id,))
+    mapping = {row[0]: row[1] for row in c.fetchall()}
+    
+    # If no mapping exists, create a simple numeric mapping
+    if not mapping:
+        c.execute("SELECT chapter_num FROM chapters WHERE book_id = ? ORDER BY chapter_num", (book_id,))
+        chapters = c.fetchall()
+        for i, (chapter_num,) in enumerate(chapters):
+            # Create simple mapping: ch01.xhtml -> 0, ch02.xhtml -> 1, etc.
+            filename = f"ch{i+1:02d}.xhtml"
+            mapping[filename] = chapter_num
+            # Also try common variations
+            mapping[f"chapter{i+1}.xhtml"] = chapter_num
+            mapping[f"ch{i+1}.xhtml"] = chapter_num
+            mapping[f"chapter_{i+1}.xhtml"] = chapter_num
+    
+    conn.close()
+    return jsonify(mapping)
+
 @app.route('/delete_book/<book_id>', methods=['DELETE'])
 def delete_book(book_id):
     conn = sqlite3.connect('reader.db')
@@ -342,28 +465,78 @@ def delete_book(book_id):
     conn.close()
     return jsonify({'success': True})
 
+@app.route('/search/<book_id>/<query>')
+def search_book(book_id, query):
+    conn = sqlite3.connect('reader.db')
+    c = conn.cursor()
+    c.execute("SELECT chapter_num, title, content FROM chapters WHERE book_id = ? ORDER BY chapter_num", (book_id,))
+    chapters = c.fetchall()
+    conn.close()
+    
+    results = []
+    for chapter_num, title, content in chapters:
+        # Remove HTML tags for search
+        from bs4 import BeautifulSoup
+        text = BeautifulSoup(content, 'html.parser').get_text()
+        
+        if query.lower() in text.lower():
+            # Find context around matches
+            words = text.split()
+            for i, word in enumerate(words):
+                if query.lower() in word.lower():
+                    start = max(0, i - 10)
+                    end = min(len(words), i + 10)
+                    context = ' '.join(words[start:end])
+                    results.append({
+                        'chapter': chapter_num,
+                        'title': title,
+                        'context': context
+                    })
+                    break
+    
+    return jsonify(results)
+
+@app.route('/book_stats/<book_id>')
+def get_book_stats(book_id):
+    conn = sqlite3.connect('reader.db')
+    c = conn.cursor()
+    c.execute("SELECT SUM(word_count) FROM chapters WHERE book_id = ?", (book_id,))
+    total_words = c.fetchone()[0] or 0
+    conn.close()
+    
+    words_per_page = 250
+    total_book_pages = max(1, (total_words + words_per_page - 1) // words_per_page)
+    
+    return jsonify({'total_pages': total_book_pages, 'total_words': total_words})
+
 @app.route('/image/<book_id>/<filename>')
 def get_image(book_id, filename):
     from flask import Response
-    conn = sqlite3.connect('reader.db')
-    c = conn.cursor()
-    c.execute("SELECT data FROM images WHERE book_id = ? AND filename = ?", (book_id, filename))
-    result = c.fetchone()
-    conn.close()
-    
-    if result:
-        # Detect image type from data
-        data = result[0]
-        if data.startswith(b'\x89PNG'):
-            mimetype = 'image/png'
-        elif data.startswith(b'\xff\xd8'):
-            mimetype = 'image/jpeg'
-        elif data.startswith(b'GIF'):
-            mimetype = 'image/gif'
-        else:
-            mimetype = 'image/jpeg'
-        return Response(data, mimetype=mimetype)
-    return '', 404
+    try:
+        # Sanitize filename
+        sanitized_filename = re.sub(r'[^a-zA-Z0-9_.]', '_', filename)
+        conn = sqlite3.connect('reader.db')
+        c = conn.cursor()
+        c.execute("SELECT data FROM images WHERE book_id = ? AND filename = ?", (book_id, sanitized_filename))
+        result = c.fetchone()
+        conn.close()
+        
+        if result:
+            # Detect image type from data
+            data = result[0]
+            if data.startswith(b'\x89PNG'):
+                mimetype = 'image/png'
+            elif data.startswith(b'\xff\xd8'):
+                mimetype = 'image/jpeg'
+            elif data.startswith(b'GIF'):
+                mimetype = 'image/gif'
+            else:
+                mimetype = 'image/jpeg'
+            return Response(data, mimetype=mimetype)
+        return Response('', status=404)
+    except Exception as e:
+        return Response('', status=500)
+
 
 if __name__ == '__main__':
     app.run(debug=True)
